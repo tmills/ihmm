@@ -1,5 +1,6 @@
 function [sorted,indices] = getSortedWords(S,Y,pos_idx)
 
+Y = Y';
 hid = S{end}.S;
 idx = 1:max(Y);   %% all word indices
 pos_inds = find(hid==pos_idx);   %% find all instances of given hmm state
