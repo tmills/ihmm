@@ -29,6 +29,7 @@ function [S, stats] = iHmmSampleBeam(Y, hypers, numb, nums, numi, S0)
 
 % Initialize the sampler.
 T = size(Y,2);                      % # of time-steps T
+numIters = numb + (nums-1)*numi;
 
 sample.S = S0;
 sample.K = max(S0);
@@ -63,9 +64,10 @@ sample.Pi = SampleTransitionMatrix( sample.S, sample.alpha0 * sample.Beta );
 sample.Pi(sample.K+1,:) = [];
 
 iter = 1;
-fprintf('Iteration 0: K = %d, alpha0 = %f, gamma = %f.', sample.K, sample.alpha0, sample.gamma);
+fprintf('Iteration 0: K = %d, alpha0 = %f, gamma = %f.\n', sample.K, sample.alpha0, sample.gamma);
 
 while iter <= (numb + (nums-1)*numi)    
+    fflush(stdout);
     % Safety check.
     assert(size(sample.Phi,1) == size(sample.Beta,2) - 1);
     
@@ -194,3 +196,4 @@ while iter <= (numb + (nums-1)*numi)
         fprintf('Wasted computation as there were no paths through the iHMM.\n');
     end
 end
+
