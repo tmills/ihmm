@@ -1,4 +1,4 @@
-function [S, stats] = iHmmSampleBeam(Y, hypers, numb, nums, numi, S0)
+function [S, stats] = iHmmSampleBeam(Y, hypers, numb, nums, numi, S0, STrue, optional_params)
 % IHMMSAMPLEBEAM Samples states from the iHMM with multinomial output
 % using the Beam sampler.
 %
@@ -41,6 +41,14 @@ stats.alpha0 = zeros(1,(numb + (nums-1)*numi));
 stats.gamma = zeros(1,(numb + (nums-1)*numi));
 stats.jml = zeros(1,(numb + (nums-1)*numi));
 stats.trellis = zeros(1,(numb + (nums-1)*numi));
+stats.ent = zeros(1, (numb + (nums-1)*numi));
+stats.vi = zeros(1, numIters);
+
+useNullState = isfield(optional_params, 'nullstate');
+nullDone = 0;
+uniform = ones(1,max(Y));
+uniform(1) = 0;
+uniform = uniform ./ sum(uniform);
 
 % Initialize hypers; resample a few times as our inital guess might be off.
 if isfield(hypers, 'alpha0')
@@ -53,20 +61,39 @@ if isfield(hypers, 'gamma')
 else
     sample.gamma = gamrnd(hypers.gamma_a, 1.0 / hypers.gamma_b);
 end
+if  ~isfield(hypers, 'discount')
+    hypers.discount=0;     %% PY with discount=0 is regular DP
+end
 for i=1:5
     sample.Beta = ones(1, sample.K+1) / (sample.K+1);
+    if(useNullState)
+        sample.Beta(2) = sample.Beta(2) + 1;
+    end
     [sample.Beta, sample.alpha0, sample.gamma] = iHmmHyperSample(sample.S, sample.Beta, sample.alpha0, sample.gamma, hypers, 20);
 end
 
 % Sample the emission and transition probabilities.
 sample.Phi = SampleEmissionMatrix( sample.S, Y, sample.K, hypers.H );
+sample.Phi(1,:) = [1.0 zeros(1,max(Y)-1)];
+if(useNullState)
+    fprintf('Using uniform null state\n');
+    sample.Phi(2,:) = uniform;
+else
+    fprintf('Not using null state\n');
+end
+
 sample.Pi = SampleTransitionMatrix( sample.S, sample.alpha0 * sample.Beta );
+if useNullState
+    sample.Pi(2,:) = ones(1,sample.K+1) / (sample.K+1);
+end
+    
 sample.Pi(sample.K+1,:) = [];
 
 iter = 1;
 fprintf('Iteration 0: K = %d, alpha0 = %f, gamma = %f.\n', sample.K, sample.alpha0, sample.gamma);
 
-while iter <= (numb + (nums-1)*numi)    
+while iter <= (numb + (nums-1)*numi)
+%    sample.Beta
     fflush(stdout);
     % Safety check.
     assert(size(sample.Phi,1) == size(sample.Beta,2) - 1);
@@ -84,6 +111,7 @@ while iter <= (numb + (nums-1)*numi)
             u(t) = rand() * sample.Pi(sample.S(t-1), sample.S(t));
         end
     end
+
     while max(sample.Pi(:, end)) > min(u)     % Break the Pi{k} stick some more.
         pl = size(sample.Pi, 2);
         bl = length(sample.Beta);
@@ -129,13 +157,19 @@ while iter <= (numb + (nums-1)*numi)
     dyn_prog(:,1) = dyn_prog(:,1) / sum(dyn_prog(:,1));
     
     for t=2:T
-        A = sample.Pi(1:sample.K, 1:sample.K) > u(t);
-        dyn_prog(:,t) = A' * dyn_prog(:,t-1);
-        stats.trellis(iter) = stats.trellis(iter) + sum(sum(A));
-        for k=1:sample.K
-            dyn_prog(k,t) = sample.Phi(k, Y(t)) * dyn_prog(k, t);
+        if(Y(t) == 1)
+            %% only possible state is 1
+            dyn_prog(:,t) = [1.0 zeros(1,sample.K-1)]';
+            %% do not change trellis values
+        else
+            A = sample.Pi(1:sample.K, 1:sample.K) > u(t);
+            dyn_prog(:,t) = A' * dyn_prog(:,t-1);
+            stats.trellis(iter) = stats.trellis(iter) + sum(sum(A));
+            for k=1:sample.K
+                dyn_prog(k,t) = sample.Phi(k, Y(t)) * dyn_prog(k, t);
+            end
+            dyn_prog(:,t) = dyn_prog(:,t) / sum(dyn_prog(:,t));
         end
-        dyn_prog(:,t) = dyn_prog(:,t) / sum(dyn_prog(:,t));
     end
     
     % Backtrack to sample a path through the HMM.
@@ -146,12 +180,15 @@ while iter <= (numb + (nums-1)*numi)
             r = r ./ sum(r);
             sample.S(t) = 1 + sum(rand() > cumsum(r));
         end
-        
         % Safety check.
         assert(~isnan(sum(sample.S(t))));
         
         % Cleanup our state space by removing redundant states.
         zind = sort(setdiff(1:sample.K, unique(sample.S)));
+        if useNullState && (sum(find(zind==2)))
+            nullDone = true;
+        end
+        
         for i = length(zind):-1:1
             sample.Beta(end) = sample.Beta(end) + sample.Beta(zind(i));
             sample.Beta(zind(i)) = [];
@@ -167,16 +204,25 @@ while iter <= (numb + (nums-1)*numi)
         
         % Resample the Phi's given the new state sequences.
         sample.Phi = SampleEmissionMatrix(sample.S, Y, sample.K,hypers.H);
-
+        sample.Phi(1,:) = [1.0 zeros(1,max(Y)-1)];
+        if(useNullState && ~nullDone)
+            sample.Phi(2,:) = uniform;
+        end
+        
         % Resample the transition probabilities.
         sample.Pi = SampleTransitionMatrix(sample.S, sample.alpha0 * sample.Beta);
+        if(useNullState && ~nullDone)
+            sample.Pi(2,:) = ones(1,sample.K+1) / (sample.K+1);
+        end
         sample.Pi(sample.K+1,:) = [];
-        
+        fprintf('Resampled..\n');
+        fflush(stdout);
+
         % Safety checks
         assert(size(sample.Pi,1) == sample.K);
         assert(size(sample.Pi,2) == sample.K+1);
         assert(sample.K == length(sample.Beta) - 1);
-        assert(min(min(sample.Pi)) >= 0);
+        assert(min(min(sample.Pi)));
         assert(sample.K == max(sample.S));
         
         % Prepare next iteration.
@@ -184,11 +230,24 @@ while iter <= (numb + (nums-1)*numi)
         stats.gamma(iter) = sample.gamma;
         stats.K(iter) = sample.K;
         stats.jll(iter) = iHmmJointLogLikelihood(sample.S, Y, sample.Beta, sample.alpha0, hypers.H);
-        fprintf('Iteration: %d: K = %d, alpha0 = %f, gamma = %f, JL = %f.\n', ...
-            iter, sample.K, sample.alpha0,sample. gamma, stats.jll(iter));
+        stats.vi(iter) = getVI(STrue, sample.S);
+        if(useNullState && ~nullDone)
+%            nullIndexes = find(sample.S == 2);
+%            nullTokens = Y(nullIndexes);
+%            stats.nullIndexes{iter} = nullIndexes;
+%            stats.nullTokens{iter} = nullTokens;
+        end
+        fprintf('Iteration: %d: K = %d, alpha0 = %f, gamma = %f, JL = %f, VI = %f, NS=%d.\n', ...
+            iter, sample.K, sample.alpha0,sample. gamma, stats.jll(iter), stats.vi(iter), useNullState);
+        fflush(stdout);
         
         if iter >= numb && mod(iter-numb, numi) == 0
             S{end+1} = sample;
+        end
+        
+        if(useNullState && ~nullDone)
+            fprintf('Null state used by %d tokens\n', length(find(sample.S==2)));
+            fflush(stdout);
         end
         
         iter = iter + 1;
