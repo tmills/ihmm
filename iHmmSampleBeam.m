@@ -222,7 +222,7 @@ while iter <= (numb + (nums-1)*numi)
         assert(size(sample.Pi,1) == sample.K);
         assert(size(sample.Pi,2) == sample.K+1);
         assert(sample.K == length(sample.Beta) - 1);
-        assert(min(min(sample.Pi)));
+        assert(min(min(sample.Pi)) >= 0);
         assert(sample.K == max(sample.S));
         
         % Prepare next iteration.
